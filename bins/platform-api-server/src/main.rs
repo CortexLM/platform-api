@@ -1,0 +1,180 @@
+use anyhow::Result;
+use clap::Parser;
+use platform_api::{create_router, AppState, AppConfig};
+use std::net::SocketAddr;
+use std::env;
+use std::sync::Arc;
+use tokio::net::TcpListener;
+use tower::ServiceBuilder;
+use tower_http::{
+    cors::CorsLayer,
+    trace::TraceLayer,
+};
+use tracing::{info, error};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+mod tls;
+use tls::serve_https;
+
+/// Platform API Server
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Configuration file path
+    #[arg(short, long, default_value = "config.toml")]
+    config: String,
+
+    /// Server host
+    #[arg(long, default_value = "0.0.0.0")]
+    host: String,
+
+    /// Server port
+    #[arg(long, default_value = "3000")]
+    port: u16,
+
+    /// Log level
+    #[arg(long, default_value = "info")]
+    log_level: String,
+
+    /// TLS certificate path
+    #[arg(long)]
+    tls_cert: Option<String>,
+
+    /// TLS private key path
+    #[arg(long)]
+    tls_key: Option<String>,
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let args = Args::parse();
+
+    // Initialize tracing
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| args.log_level.into()),
+        )
+        .with(tracing_subscriber::fmt::layer())
+        .init();
+
+    info!("Starting Platform API Server");
+
+    // Load configuration
+    let config = load_config(&args.config)?;
+    
+    // Create application state
+    let mut state = AppState::new(config.clone()).await?;
+
+    // Initialize security with TDX attestation
+    let state = state.init_security_from_tdx().await?;
+
+    // Initialize ChallengeRunner if database pool is available
+    let state = if let Some(pool) = &state.database_pool {
+        use platform_api::challenge_runner::{ChallengeRunner, ChallengeRunnerConfig};
+        let runner_config = ChallengeRunnerConfig::default();
+        // Pass ORM gateway and validator_challenge_status to ChallengeRunner for query bridge and get_validator_count
+        let runner = Arc::new(ChallengeRunner::new(
+            runner_config, 
+            (**pool).clone(), 
+            state.orm_gateway.clone(),
+            Some(state.validator_challenge_status.clone())
+        ));
+        info!("ChallengeRunner initialized for auto-starting challenges with ORM bridge");
+        
+        // Clone state and set runner
+        let mut new_state = state.clone();
+        new_state.challenge_runner = Some(runner);
+        new_state
+    } else {
+        state
+    };
+
+    // Start background task to sync challenges from PostgreSQL
+    let state_arc = Arc::new(state);
+    platform_api::background::start_challenge_sync_task(state_arc.clone());
+    
+    // Start background task to sync metagraph hotkeys from Bittensor chain
+    platform_api::background::start_metagraph_sync_task();
+
+    // Create router
+    let app = create_router((*state_arc).clone());
+
+    // Start server
+    let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
+    
+    // Check if TLS is enabled
+    if let (Some(cert_path), Some(key_path)) = (args.tls_cert, args.tls_key) {
+        info!("🔒 Starting HTTPS server on {}", addr);
+        serve_https(app, addr, &cert_path, &key_path).await?;
+    } else {
+        info!("🌐 Starting HTTP server on {}", addr);
+    let listener = TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
+    }
+
+    Ok(())
+}
+
+fn load_config(path: &str) -> Result<AppConfig> {
+    // For now, return a default configuration
+    // In a real implementation, this would load from the specified file
+    Ok(AppConfig {
+        server_port: 3000,
+        server_host: "0.0.0.0".to_string(),
+        jwt_secret_ui: env::var("JWT_SECRET_UI")
+            .expect("JWT_SECRET_UI environment variable must be set for production"),
+        database_url: env::var("DATABASE_URL")
+            .unwrap_or_else(|_| "postgresql://localhost/platform".to_string()),
+        storage_config: platform_api_storage::StorageConfig {
+            backend_type: env::var("STORAGE_BACKEND")
+                .unwrap_or_else(|_| "postgres".to_string()),
+            s3_bucket: Some("platform-storage".to_string()),
+            s3_region: Some("us-east-1".to_string()),
+            minio_endpoint: None,
+            encryption_key: env::var("STORAGE_ENCRYPTION_KEY")
+                .expect("STORAGE_ENCRYPTION_KEY environment variable must be set for production"),
+        },
+        attestation_config: platform_api_attestation::AttestationConfig {
+            dcap_enabled: true,
+            sev_enabled: true,
+            tdx_enabled: true,
+            policy_store_path: "/tmp/policies".to_string(),
+            verification_timeout: 30,
+            jwt_secret: env::var("JWT_SECRET")
+                .expect("JWT_SECRET environment variable must be set for production"),
+            session_timeout: 3600,
+            verifier_url: Some("http://localhost:8080".to_string()),
+        },
+        kbs_config: platform_api_kbs::KbsConfig {
+            key_derivation_algorithm: "HKDF".to_string(),
+            key_size: 256,
+            session_timeout: 3600,
+            max_sessions: 1000,
+            encryption_key: env::var("KBS_ENCRYPTION_KEY")
+                .expect("KBS_ENCRYPTION_KEY environment variable must be set for production"),
+        },
+        scheduler_config: platform_api_scheduler::SchedulerConfig {
+            max_concurrent_jobs: 100,
+            job_timeout: 1800,
+            retry_attempts: 3,
+            retry_delay: 60,
+            cleanup_interval: 300,
+        },
+        builder_config: platform_api_builder::BuilderConfig {
+            build_timeout: 1800,
+            max_concurrent_builds: 10,
+            docker_registry: "localhost:5000".to_string(),
+            github_token: None,
+            build_cache_size: 1024 * 1024 * 1024, // 1GB
+        },
+        metrics_config: platform_api::MetricsConfig {
+            enabled: true,
+            port: 9090,
+            path: "/metrics".to_string(),
+            collect_interval: 60,
+        },
+    })
+}
+
+

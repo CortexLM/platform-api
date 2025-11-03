@@ -1,0 +1,35 @@
+# TLS Certificates (NEVER COMMIT!)
+certs/
+*.pem
+*.key
+*.crt
+*.cert
+
+# Sensitive key files
+*.bin
+key.bin
+
+# Data directories
+data/
+
+# Docker
+.dockerignore
+
+# Build artifacts
+target/
+Cargo.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+=
+transferring
+

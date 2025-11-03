@@ -1,0 +1,109 @@
+[workspace]
+members = [
+    "crates/api",
+    "crates/builder", 
+    "crates/storage",
+    "crates/attestation",
+    "crates/kbs",
+    "crates/scheduler",
+    "crates/autoscaler",
+    "crates/models",
+    "bins/platform-api-server",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Platform Team"]
+license = "MIT"
+homepage = "https://platform.network"
+repository = "https://github.com/platform-network/platform-api"
+
+[workspace.dependencies]
+# Internal dependencies
+platform-api-models = { path = "crates/models" }
+platform-api-storage = { path = "crates/storage" }
+platform-api-attestation = { path = "crates/attestation" }
+platform-api-kbs = { path = "crates/kbs" }
+platform-api-scheduler = { path = "crates/scheduler" }
+platform-api-autoscaler = { path = "crates/autoscaler" }
+platform-api-builder = { path = "crates/builder" }
+
+# Core dependencies
+anyhow = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+axum = { version = "0.7", features = ["macros", "ws"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.0", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "1.0"
+
+# HTTP client
+reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
+
+# Storage
+aws-sdk-s3 = "1.0"
+aws-config = "1.0"
+
+# Git operations
+git2 = "0.18"
+
+# BuildKit/Docker
+bollard = "0.18"
+
+# Cryptography
+ring = "0.17"
+sha2 = "0.10"
+aes-gcm = "0.10"
+hex = "0.4"
+rand = "0.8"
+
+# Substrate for signature verification
+sp-core = "38.1"
+sp-runtime = "44.0"
+
+# Bittensor SDK for metagraph sync
+bittensor-rs = { git = "https://github.com/CortexLM/bittensor-rs" }
+
+# DCAP/SGX/TDX
+dcap-qvl = "0.3"
+x509-parser = "0.16"
+
+# SEV-SNP
+sev-snp-utils = "0.1"
+
+# Async runtime
+futures = "0.3"
+
+# Configuration
+config = "0.14"
+toml = "0.8"
+
+# Database (for scheduler)
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "chrono", "uuid"] }
+
+# Metrics
+metrics = "0.22"
+metrics-exporter-prometheus = "0.13"
+
+# Dstack dependencies
+dstack-types = { git = "https://github.com/Dstack-TEE/dstack", package = "dstack-types" }
+dstack-sdk-types = { git = "https://github.com/Dstack-TEE/dstack", package = "dstack-sdk-types", default-features = false }
+dstack-gateway-rpc = { git = "https://github.com/Dstack-TEE/dstack", package = "dstack-gateway-rpc" }
+dstack-kms-rpc = { git = "https://github.com/Dstack-TEE/dstack", package = "dstack-kms-rpc" }
+dstack-guest-agent-rpc = { git = "https://github.com/Dstack-TEE/dstack", package = "dstack-guest-agent-rpc" }
+dstack-vmm-rpc = { git = "https://github.com/Dstack-TEE/dstack", package = "dstack-vmm-rpc" }
+dstack-mr = { git = "https://github.com/Dstack-TEE/dstack", package = "dstack-mr" }
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
+
+

@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  platform-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: platform-api-local
+    ports:
+      - "3000:3000"   # HTTP API
+      - "9090:9090"   # Prometheus metrics
+    volumes:
+      - ./data:/data
+    environment:
+      # Logging
+      - RUST_LOG=info
+      
+      # TEE Security (CRITICAL for production)
+      - TEE_ENFORCED=true
+      
+      # Compose hash for TDX attestation
+      - COMPOSE_HASH=production-default-hash
+      
+      # API Configuration
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=3000
+      
+      # Security
+      - DEV_MODE=false
+      
+    restart: unless-stopped
+    networks:
+      - platform-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  platform-network:
+    driver: bridge
+

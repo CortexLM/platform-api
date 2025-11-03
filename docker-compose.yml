@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  platform-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: platform-api-local
+    ports:
+      - "3000:3000"
+      - "9090:9090"
+    volumes:
+      - ./data:/data
+    environment:
+      - RUST_LOG=info
+      - TEE_ENFORCED=false
+    restart: unless-stopped
