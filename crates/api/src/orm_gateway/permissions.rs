@@ -273,6 +273,8 @@ mod tests {
             limit: Some(100),
             offset: None,
             aggregations: None,
+            values: None,
+            set_values: None,
         };
         
         assert!(permissions.check_query_permissions(&query).is_ok());

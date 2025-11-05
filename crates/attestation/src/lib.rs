@@ -91,8 +91,8 @@ impl AttestationService {
             }
             
             // Check nonce binding if present
-            if let Some(nonce) = &request.nonce {
-                if nonce.len() < 16 {
+            if !request.nonce.is_empty() {
+                if request.nonce.len() < 16 {
                     return Ok(AttestationResponse {
                         session_token: String::new(),
                         status: platform_api_models::AttestationStatus::Failed,

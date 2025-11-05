@@ -329,6 +329,8 @@ mod tests {
             limit: Some(100),
             offset: None,
             aggregations: None,
+            values: None,
+            set_values: None,
         };
         
         assert!(validator.validate(&query).is_ok());
@@ -350,6 +352,8 @@ mod tests {
             limit: None,
             offset: None,
             aggregations: None,
+            values: None,
+            set_values: None,
         };
         
         assert!(validator.validate(&query).is_err());
