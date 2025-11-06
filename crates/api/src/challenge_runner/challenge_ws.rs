@@ -12,6 +12,7 @@ use tokio::time::Instant;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{error, info, warn};
 use x25519_dalek::{EphemeralSecret, PublicKey};
+use crate::redis_client::{RedisClient, create_job_progress, create_job_log};
 
 /// Envelope used for encrypted WebSocket frames
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -52,6 +53,7 @@ pub struct ChallengeWsClient {
     pub db_version_sender: Option<Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<Option<u32>>>>>>, // Channel to send db_version back to caller
     pub migrations_sender: Option<Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<Vec<crate::challenge_runner::migrations::Migration>>>>>>, // Channel to send migrations back to caller
     pub validator_challenge_status: Option<Arc<tokio::sync::RwLock<std::collections::HashMap<String, std::collections::HashMap<String, platform_api_models::ValidatorChallengeStatus>>>>>, // For get_validator_count
+    pub redis_client: Option<Arc<RedisClient>>, // Redis client for job progress logging
 }
 
 impl ChallengeWsClient {
@@ -67,6 +69,7 @@ impl ChallengeWsClient {
             db_version_sender: None,
             migrations_sender: None,
             validator_challenge_status: None,
+            redis_client: None,
         }
     }
     
@@ -80,6 +83,7 @@ impl ChallengeWsClient {
         db_version_sender: Option<Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<Option<u32>>>>>>,
         migrations_sender: Option<Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<Vec<crate::challenge_runner::migrations::Migration>>>>>>,
         validator_challenge_status: Option<Arc<tokio::sync::RwLock<std::collections::HashMap<String, std::collections::HashMap<String, platform_api_models::ValidatorChallengeStatus>>>>>,
+        redis_client: Option<Arc<RedisClient>>,
     ) -> Self {
         self.challenge_id = Some(challenge_id);
         self.challenge_name = Some(challenge_name);
@@ -89,6 +93,7 @@ impl ChallengeWsClient {
         self.db_version_sender = db_version_sender;
         self.migrations_sender = migrations_sender;
         self.validator_challenge_status = validator_challenge_status;
+        self.redis_client = redis_client;
         self
     }
 
@@ -254,7 +259,8 @@ impl ChallengeWsClient {
             let request_bytes = serde_json::to_vec(&request_msg)
                 .map_err(|_| anyhow!("Failed to serialize migrations request"))?;
             
-            let cipher = ChaCha20Poly1305::new_from_slice(&aead_key).unwrap();
+            let cipher = ChaCha20Poly1305::new_from_slice(&aead_key)
+                .map_err(|_| anyhow!("Invalid AEAD key length (expected 32 bytes)"))?;
             let request_ciphertext = cipher
                 .encrypt(&request_nonce.into(), request_bytes.as_slice())
                 .map_err(|_| anyhow!("Failed to encrypt migrations request"))?;
@@ -299,7 +305,13 @@ impl ChallengeWsClient {
                                         warn!("Invalid nonce length: {} (expected 12)", nonce_bytes.len());
                                         continue;
                                     }
-                                    let nonce_array: [u8; 12] = nonce_bytes[..12].try_into().unwrap();
+                                    let nonce_array: [u8; 12] = match nonce_bytes[..12].try_into() {
+                                        Ok(arr) => arr,
+                                        Err(_) => {
+                                            warn!("Failed to convert nonce to array (this should not happen)");
+                                            continue;
+                                        }
+                                    };
                                     
                                     let ciphertext = match base64_engine.decode(&envelope.ciphertext) {
                                         Ok(bytes) => bytes,
@@ -437,7 +449,8 @@ impl ChallengeWsClient {
         // Send orm_ready signal to challenge after migrations are applied (or timeout)
         // This tells the challenge that it can now initialize ORM client and run tests
         {
-            let cipher_for_ready = ChaCha20Poly1305::new_from_slice(&aead_key).unwrap();
+            let cipher_for_ready = ChaCha20Poly1305::new_from_slice(&aead_key)
+                .map_err(|_| anyhow!("Invalid AEAD key length (expected 32 bytes)"))?;
             let mut orm_ready_nonce = [0u8; 12];
             rand::thread_rng().fill_bytes(&mut orm_ready_nonce);
             let orm_ready_nonce_b64 = base64_engine.encode(orm_ready_nonce);
@@ -515,7 +528,13 @@ impl ChallengeWsClient {
                     warn!(len = nonce_bytes.len(), "Invalid nonce length");
                     continue;
                 }
-                let nonce_array: [u8; 12] = nonce_bytes[..12].try_into().unwrap();
+                let nonce_array: [u8; 12] = match nonce_bytes[..12].try_into() {
+                    Ok(arr) => arr,
+                    Err(_) => {
+                        warn!("Failed to convert nonce to array (this should not happen)");
+                        continue;
+                    }
+                };
 
                 let ciphertext = match base64_engine.decode(&envelope.ciphertext) {
                     Ok(c) => c,
@@ -525,7 +544,11 @@ impl ChallengeWsClient {
                     }
                 };
                 
-                let cipher = ChaCha20Poly1305::new_from_slice(&aead_key).unwrap();
+                let cipher = ChaCha20Poly1305::new_from_slice(&aead_key)
+                    .map_err(|_| {
+                        error!("Invalid AEAD key length (expected 32 bytes)");
+                        anyhow!("Invalid AEAD key length")
+                    })?;
                 let plaintext = match cipher
                     .decrypt(&nonce_array.into(), ciphertext.as_slice()) {
                     Ok(pt) => pt,
@@ -549,6 +572,73 @@ impl ChallengeWsClient {
                     challenge_id = challenge_id_clone.as_deref(),
                     "Received message from challenge via WebSocket"
                 );
+
+                // Handle benchmark_progress messages for Redis logging
+                if plain_msg.msg_type == "benchmark_progress" {
+                    if let Some(redis) = &self.redis_client {
+                        if let Some(job_id) = plain_msg.payload.get("job_id")
+                            .and_then(|v| v.as_str())
+                        {
+                            if let Some(progress_data) = plain_msg.payload.get("progress") {
+                                // Extract progress metrics
+                                let progress_obj = progress_data.as_object();
+                                let progress_percent = progress_obj
+                                    .and_then(|p| p.get("progress_percent"))
+                                    .and_then(|v| v.as_f64())
+                                    .unwrap_or(0.0);
+                                let total_tasks = progress_obj
+                                    .and_then(|p| p.get("total_tasks"))
+                                    .and_then(|v| v.as_i64())
+                                    .map(|v| v as i32);
+                                let completed_tasks = progress_obj
+                                    .and_then(|p| p.get("completed_tasks"))
+                                    .and_then(|v| v.as_i64())
+                                    .map(|v| v as i32);
+                                let resolved_tasks = progress_obj
+                                    .and_then(|p| p.get("resolved_tasks"))
+                                    .and_then(|v| v.as_i64())
+                                    .map(|v| v as i32);
+                                let unresolved_tasks = progress_obj
+                                    .and_then(|p| p.get("unresolved_tasks"))
+                                    .and_then(|v| v.as_i64())
+                                    .map(|v| v as i32);
+                                
+                                let status = progress_obj
+                                    .and_then(|p| p.get("status"))
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("running")
+                                    .to_string();
+                                
+                                // Log progress to Redis
+                                let progress = create_job_progress(
+                                    job_id.to_string(),
+                                    status,
+                                    progress_percent,
+                                    total_tasks,
+                                    completed_tasks,
+                                    resolved_tasks,
+                                    unresolved_tasks,
+                                    None,
+                                );
+                                
+                                if let Err(e) = redis.set_job_progress(&progress).await {
+                                    warn!("Failed to log job progress to Redis: {}", e);
+                                }
+                                
+                                // Log progress event to Redis logs
+                                let log_entry = create_job_log(
+                                    "info".to_string(),
+                                    format!("Progress update: {:.1}% ({} tasks completed)", progress_percent, completed_tasks.unwrap_or(0)),
+                                    Some(progress_data.clone()),
+                                );
+                                
+                                if let Err(e) = redis.append_job_log(job_id, &log_entry).await {
+                                    warn!("Failed to append job log to Redis: {}", e);
+                                }
+                            }
+                        }
+                    }
+                }
 
                 // Handle ORM permissions update from challenge
                 if plain_msg.msg_type == "orm_permissions" {

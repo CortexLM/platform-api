@@ -7,6 +7,7 @@ use axum::{
 };
 use serde::Deserialize;
 use uuid::Uuid;
+use sqlx::Row;
 
 use platform_api_models::{
     ClaimJobRequest, ClaimJobResponse, SubmitResultRequest, 
@@ -14,6 +15,8 @@ use platform_api_models::{
 };
 use platform_api_scheduler::CreateJobRequest;
 use crate::state::AppState;
+use crate::redis_client::RedisClient;
+use serde_json::Value as JsonValue;
 
 /// Create jobs router
 pub fn create_router() -> Router<AppState> {
@@ -26,6 +29,8 @@ pub fn create_router() -> Router<AppState> {
         .route("/jobs/:id/complete", post(complete_job))
         .route("/jobs/:id/results", post(submit_results))
         .route("/jobs/:id/fail", post(fail_job))
+        .route("/jobs/:id/progress", get(get_job_progress))
+        .route("/jobs/:id/test-results", get(get_job_test_results))
         .route("/jobs/next", get(get_next_job))
         .route("/jobs/stats", get(get_job_stats))
 }
@@ -204,6 +209,94 @@ pub struct FailJobRequest {
 #[derive(Debug, Deserialize)]
 pub struct PendingJobsParams {
     pub validator_hotkey: Option<String>,
+}
+
+/// Get real-time job progress from Redis
+pub async fn get_job_progress(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<JsonValue>, StatusCode> {
+    let job_id = id.to_string();
+    
+    if let Some(redis) = &state.redis_client {
+        match redis.get_job_progress(&job_id).await {
+            Ok(Some(progress)) => {
+                Ok(Json(serde_json::to_value(progress).unwrap_or(JsonValue::Null)))
+            }
+            Ok(None) => {
+                Err(StatusCode::NOT_FOUND)
+            }
+            Err(e) => {
+                tracing::error!("Failed to get job progress from Redis: {}", e);
+                Err(StatusCode::INTERNAL_SERVER_ERROR)
+            }
+        }
+    } else {
+        Err(StatusCode::SERVICE_UNAVAILABLE)
+    }
+}
+
+/// Get detailed test results from PostgreSQL
+pub async fn get_job_test_results(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Query(params): Query<TestResultsParams>,
+) -> Result<Json<JsonValue>, StatusCode> {
+    if let Some(pool) = &state.database_pool {
+        let limit = params.limit.unwrap_or(1000);
+        
+        let rows = sqlx::query(
+            r#"
+            SELECT id, job_id, challenge_id, task_id, test_name, status,
+                   is_resolved, error_message, execution_time_ms,
+                   output_text, logs, metrics, created_at
+            FROM job_test_results
+            WHERE job_id = $1
+            ORDER BY created_at ASC
+            LIMIT $2
+            "#
+        )
+        .bind(id)
+        .bind(limit as i64)
+        .fetch_all(pool.as_ref())
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to query test results: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+        
+        let results: Vec<JsonValue> = rows.into_iter().map(|row| {
+            serde_json::json!({
+                "id": row.get::<Uuid, _>("id"),
+                "job_id": row.get::<Uuid, _>("job_id"),
+                "challenge_id": row.get::<Uuid, _>("challenge_id"),
+                "task_id": row.get::<String, _>("task_id"),
+                "test_name": row.get::<Option<String>, _>("test_name"),
+                "status": row.get::<String, _>("status"),
+                "is_resolved": row.get::<bool, _>("is_resolved"),
+                "error_message": row.get::<Option<String>, _>("error_message"),
+                "execution_time_ms": row.get::<Option<i64>, _>("execution_time_ms"),
+                "output_text": row.get::<Option<String>, _>("output_text"),
+                "logs": row.get::<JsonValue, _>("logs"),
+                "metrics": row.get::<JsonValue, _>("metrics"),
+                "created_at": row.get::<chrono::DateTime<chrono::Utc>, _>("created_at"),
+            })
+        }).collect();
+        
+        Ok(Json(serde_json::json!({
+            "job_id": id,
+            "test_results": results,
+            "total": results.len(),
+        })))
+    } else {
+        Err(StatusCode::SERVICE_UNAVAILABLE)
+    }
+}
+
+/// Query parameters for test results
+#[derive(Debug, Deserialize)]
+pub struct TestResultsParams {
+    pub limit: Option<u32>,
 }
 
 

@@ -22,6 +22,7 @@ pub mod challenge_runner;
 pub mod orm_gateway;
 pub mod models;
 pub mod job_distributor;
+pub mod redis_client;
 
 pub use handlers::*;
 pub use middleware::*;

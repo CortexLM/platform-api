@@ -62,6 +62,7 @@ pub struct ChallengeRunner {
     cvm_manager: CvmManager,
     orm_gateway: Option<Arc<tokio::sync::RwLock<crate::orm_gateway::SecureORMGateway>>>, // ORM gateway for query bridge
     validator_challenge_status: Option<Arc<tokio::sync::RwLock<std::collections::HashMap<String, std::collections::HashMap<String, platform_api_models::ValidatorChallengeStatus>>>>>, // Validator challenge status for get_validator_count
+    redis_client: Option<Arc<crate::redis_client::RedisClient>>, // Redis client for job progress logging
 }
 
 impl ChallengeRunner {
@@ -69,7 +70,8 @@ impl ChallengeRunner {
         config: ChallengeRunnerConfig, 
         db_pool: PgPool, 
         orm_gateway: Option<Arc<tokio::sync::RwLock<crate::orm_gateway::SecureORMGateway>>>,
-        validator_challenge_status: Option<Arc<tokio::sync::RwLock<std::collections::HashMap<String, std::collections::HashMap<String, platform_api_models::ValidatorChallengeStatus>>>>>
+        validator_challenge_status: Option<Arc<tokio::sync::RwLock<std::collections::HashMap<String, std::collections::HashMap<String, platform_api_models::ValidatorChallengeStatus>>>>>,
+        redis_client: Option<Arc<crate::redis_client::RedisClient>>,
     ) -> Self {
         let migration_runner = MigrationRunner::new(db_pool.clone());
         let cvm_manager = CvmManager::new(
@@ -85,6 +87,7 @@ impl ChallengeRunner {
             cvm_manager,
             orm_gateway,
             validator_challenge_status,
+            redis_client,
         }
     }
     
@@ -255,6 +258,7 @@ impl ChallengeRunner {
                     Some(db_version_sender_arc.clone()),
                     Some(migrations_sender_arc.clone()),
                     self.validator_challenge_status.clone(),
+                    self.redis_client.clone(),
                 );
             }
             

@@ -73,12 +73,13 @@ async fn main() -> Result<()> {
     let state = if let Some(pool) = &state.database_pool {
         use platform_api::challenge_runner::{ChallengeRunner, ChallengeRunnerConfig};
         let runner_config = ChallengeRunnerConfig::default();
-        // Pass ORM gateway and validator_challenge_status to ChallengeRunner for query bridge and get_validator_count
+        // Pass ORM gateway, validator_challenge_status, and redis_client to ChallengeRunner
         let runner = Arc::new(ChallengeRunner::new(
             runner_config, 
             (**pool).clone(), 
             state.orm_gateway.clone(),
-            Some(state.validator_challenge_status.clone())
+            Some(state.validator_challenge_status.clone()),
+            state.redis_client.clone(),
         ));
         info!("ChallengeRunner initialized for auto-starting challenges with ORM bridge");
         

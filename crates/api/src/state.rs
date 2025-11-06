@@ -10,9 +10,10 @@ use crate::security::PlatformSecurity;
 use crate::orm_gateway::{SecureORMGateway, ORMGatewayConfig};
 use crate::challenge_runner::ChallengeRunner;
 use crate::models::JobCache;
+use crate::redis_client::RedisClient;
 use chrono::{DateTime, Utc};
 use serde::{Serialize, Deserialize};
-use tracing::info;
+use tracing::{info, warn};
 use sqlx::PgPool;
 
 /// Application state shared across all handlers
@@ -35,6 +36,7 @@ pub struct AppState {
     pub orm_gateway_readonly: Option<Arc<tokio::sync::RwLock<SecureORMGateway>>>, // ORM gateway for read-only queries (validator routes)
     pub challenge_runner: Option<Arc<ChallengeRunner>>, // Challenge runner for API mode
     pub job_cache: Arc<tokio::sync::RwLock<HashMap<String, JobCache>>>, // Key: job_id -> JobCache
+    pub redis_client: Option<Arc<RedisClient>>, // Redis client for job progress logging
 }
 
 /// Validator connection information
@@ -132,6 +134,22 @@ impl AppState {
         let validator_challenge_status = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
         let job_cache = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
         
+        // Initialize Redis client if REDIS_URL is set
+        let redis_client = std::env::var("REDIS_URL")
+            .ok()
+            .and_then(|url| {
+                match RedisClient::new(&url) {
+                    Ok(client) => {
+                        info!("Redis client initialized for job progress logging");
+                        Some(Arc::new(client))
+                    }
+                    Err(e) => {
+                        warn!("Failed to initialize Redis client: {}. Job progress logging will be disabled.", e);
+                        None
+                    }
+                }
+            });
+        
         // Initialize ORM gateways if database pool is available
         // Read-write gateway for direct SDK connections (public routes)
         let orm_gateway = database_pool.as_ref().map(|pool| {
@@ -163,6 +181,7 @@ impl AppState {
             orm_gateway_readonly,
             challenge_runner: None, // Will be set by main.rs if enabled
             job_cache,
+            redis_client,
         })
     }
     
