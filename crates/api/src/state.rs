@@ -410,7 +410,7 @@ impl AppState {
             "SELECT encrypted_value, nonce FROM platform_config WHERE key = $1",
             "chutes_api_token"
         )
-        .fetch_optional(&**pool)
+        .fetch_optional(&*pool)
         .await?;
 
         if let Some(row) = row {

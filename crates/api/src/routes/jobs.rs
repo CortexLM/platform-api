@@ -316,7 +316,7 @@ pub async fn get_job_progress(
 
     if let Some(redis) = &state.redis_client {
         // Get raw JSON from Redis for enhanced progress data
-        let mut conn = redis.client.get_async_connection().await
+        let mut conn = redis.client.get_tokio_connection_manager().await
             .map_err(|e| {
                 tracing::error!("Failed to connect to Redis: {}", e);
                 StatusCode::INTERNAL_SERVER_ERROR
@@ -530,7 +530,7 @@ pub async fn get_current_test(
 
     if let Some(redis) = &state.redis_client {
         // Get raw JSON from Redis
-        let mut conn = redis.client.get_async_connection().await
+        let mut conn = redis.client.get_tokio_connection_manager().await
             .map_err(|e| {
                 tracing::error!("Failed to connect to Redis: {}", e);
                 StatusCode::INTERNAL_SERVER_ERROR
@@ -582,7 +582,7 @@ pub async fn stream_logs(
         let mut logs = Vec::new();
         
         // Get connection
-        let mut conn = redis.client.get_async_connection().await
+        let mut conn = redis.client.get_tokio_connection_manager().await
             .map_err(|e| {
                 tracing::error!("Failed to connect to Redis: {}", e);
                 StatusCode::INTERNAL_SERVER_ERROR
@@ -686,7 +686,7 @@ pub async fn get_resource_usage(
 
     if let Some(redis) = &state.redis_client {
         // Get raw JSON from Redis
-        let mut conn = redis.client.get_async_connection().await
+        let mut conn = redis.client.get_tokio_connection_manager().await
             .map_err(|e| {
                 tracing::error!("Failed to connect to Redis: {}", e);
                 StatusCode::INTERNAL_SERVER_ERROR
