@@ -12,7 +12,7 @@ use platform_api_models::{ChallengeSpec, ValidatorChallengeStatus};
 use platform_api_scheduler::SchedulerService;
 use platform_api_storage::{ArtifactStorage, MemoryStorageBackend, StorageBackend};
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{info, warn};
@@ -406,18 +406,21 @@ impl AppState {
         use platform_api_storage::EncryptedArtifact;
 
         // Try to load from database
-        let row = sqlx::query!(
-            "SELECT encrypted_value, nonce FROM platform_config WHERE key = $1",
-            "chutes_api_token"
+        let row = sqlx::query(
+            "SELECT encrypted_value, nonce FROM platform_config WHERE key = $1"
         )
+        .bind("chutes_api_token")
         .fetch_optional(&*pool)
         .await?;
 
         if let Some(row) = row {
             // Decrypt the token
+            let encrypted_value: Vec<u8> = row.try_get("encrypted_value")?;
+            let nonce: Vec<u8> = row.try_get("nonce")?;
+            
             let encrypted = EncryptedArtifact {
-                ciphertext: row.encrypted_value,
-                nonce: row.nonce,
+                ciphertext: encrypted_value,
+                nonce: nonce,
                 mac: vec![],
             };
 
