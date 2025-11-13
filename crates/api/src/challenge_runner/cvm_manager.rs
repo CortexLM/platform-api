@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_yaml;
 use std::collections::HashMap;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use super::migrations::Migration;
 
@@ -34,7 +34,7 @@ impl CvmManager {
                 == "true";
 
         if mock_mode {
-            warn!("🔧 MOCK VMM MODE: CVM operations will use Docker services directly");
+            debug!("MOCK VMM MODE: CVM operations will use Docker services directly");
         }
 
         Self {
@@ -106,7 +106,6 @@ impl CvmManager {
 
         // In mock mode, use Docker service directly instead of creating VMM CVM
         if self.mock_mode && compose_hash.contains("term-challenge") {
-            info!("🔧 MOCK VMM: Using Docker service term-challenge-dev directly");
             let (base_domain, gateway_port) = self.get_gateway_meta().await?;
             let api_url = format!("http://{}:{}", base_domain, gateway_port);
             return Ok(CvmDeploymentResult {
@@ -520,7 +519,6 @@ impl CvmManager {
                 let test_url = "http://term-challenge-dev:10000/sdk/health";
                 if let Ok(resp) = self.http_client.get(test_url).send().await {
                     if resp.status().is_success() {
-                        info!("🔧 MOCK VMM: Found existing Docker service for term-challenge");
                         return Ok(Some("term-challenge-dev-docker".to_string()));
                     }
                 }
