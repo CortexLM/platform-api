@@ -269,11 +269,50 @@ pub async fn submit_results(
     Path(id): Path<Uuid>,
     Json(request): Json<SubmitResultRequest>,
 ) -> Result<StatusCode, StatusCode> {
+    // Complete job in scheduler
+    let eval_result = request.result.clone(); // Clone EvalResult for forwarding
     state
         .scheduler
         .complete_job(id, request)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // Also forward result to challenge if job was distributed
+    // Extract validator hotkey from request if available, or use first assigned validator
+    let job_id_str = id.to_string();
+    let job_cache = {
+        let cache = state.job_cache.read().await;
+        cache.get(&job_id_str).cloned()
+    };
+
+    if let Some(cache) = job_cache {
+        // Convert SubmitResultRequest to JobResult format
+        // Extract data from EvalResult
+        let result_value = serde_json::json!({
+            "scores": eval_result.scores,
+            "metrics": eval_result.metrics,
+            "logs": eval_result.logs,
+            "execution_time": eval_result.execution_time,
+            "job_type": "evaluate_agent", // Default job type
+        });
+
+        let job_result = crate::job_distributor::JobResult {
+            job_id: job_id_str.clone(),
+            result: result_value,
+            error: eval_result.error.clone(),
+            validator_hotkey: cache.assigned_validators.first().cloned(),
+        };
+
+        // Forward to challenge (non-blocking, log errors but don't fail the request)
+        let distributor = crate::job_distributor::JobDistributor::new(state.clone());
+        if let Err(e) = distributor.forward_job_result(job_result).await {
+            tracing::warn!(
+                job_id = &job_id_str,
+                error = %e,
+                "Failed to forward job result to challenge (job still marked as completed)"
+            );
+        }
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }
