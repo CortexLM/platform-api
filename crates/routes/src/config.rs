@@ -205,7 +205,7 @@ pub async fn get_validator_vm_compose(
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
 
-    let provisioning = build_validator_provisioning_bundle(&config.vm_type, &config.required_env);
+    let provisioning = build_validator_provisioning_bundle(&config);
 
     Ok(Json(VmComposeResponse {
         vm_type: config.vm_type,
@@ -228,11 +228,10 @@ const ENV_VALIDATOR_VM_MEMORY_MB: &str = "VALIDATOR_VM_MEMORY_MB";
 const ENV_VALIDATOR_VM_DISK_GB: &str = "VALIDATOR_VM_DISK_GB";
 
 fn build_validator_provisioning_bundle(
-    vm_type: &str,
-    required_env: &[String],
+    config: &platform_api_models::VmComposeConfig,
 ) -> VmProvisioningBundle {
     let mut env_keys: Vec<String> = DEFAULT_ENV_KEYS.iter().map(|k| k.to_string()).collect();
-    for key in required_env {
+    for key in &config.required_env {
         if !env_keys.iter().any(|existing| existing == key) {
             env_keys.push(key.clone());
         }
@@ -245,7 +244,7 @@ fn build_validator_provisioning_bundle(
         env_keys,
         manifest_defaults: VmManifestDefaults {
             manifest_version: 2,
-            name: Some(vm_type.to_string()),
+            name: Some(config.vm_type.to_string()),
             runner: "docker-compose".to_string(),
             kms_enabled: true,
             gateway_enabled: true,
@@ -257,18 +256,26 @@ fn build_validator_provisioning_bundle(
             no_instance_id: false,
             secure_time: false,
         },
-        vm_parameters: resolve_vm_hardware_spec(vm_type),
+        vm_parameters: resolve_vm_hardware_spec(&config.vm_type, config),
     }
 }
 
-fn resolve_vm_hardware_spec(vm_type: &str) -> VmHardwareSpec {
+fn resolve_vm_hardware_spec(vm_type: &str, config: &platform_api_models::VmComposeConfig) -> VmHardwareSpec {
     VmHardwareSpec {
         name: Some(vm_type.to_string()),
-        image: read_env_string(ENV_VALIDATOR_VM_IMAGE)
+        // Priority: 1. DB image_version, 2. ENV variable, 3. Default constant
+        image: config.image_version.clone()
+            .or_else(|| read_env_string(ENV_VALIDATOR_VM_IMAGE))
             .unwrap_or_else(|| DEFAULT_VM_IMAGE.to_string()),
-        vcpu: read_env_u32(ENV_VALIDATOR_VM_VCPU).unwrap_or(DEFAULT_VM_VCPU),
-        memory: read_env_u32(ENV_VALIDATOR_VM_MEMORY_MB).unwrap_or(DEFAULT_VM_MEMORY_MB),
-        disk_size: read_env_u32(ENV_VALIDATOR_VM_DISK_GB).unwrap_or(DEFAULT_VM_DISK_GB),
+        vcpu: config.vcpu
+            .or_else(|| read_env_u32(ENV_VALIDATOR_VM_VCPU))
+            .unwrap_or(DEFAULT_VM_VCPU),
+        memory: config.memory_mb
+            .or_else(|| read_env_u32(ENV_VALIDATOR_VM_MEMORY_MB))
+            .unwrap_or(DEFAULT_VM_MEMORY_MB),
+        disk_size: config.disk_gb
+            .or_else(|| read_env_u32(ENV_VALIDATOR_VM_DISK_GB))
+            .unwrap_or(DEFAULT_VM_DISK_GB),
         user_config: String::new(),
         ports: Vec::new(),
         hugepages: false,

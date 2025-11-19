@@ -32,6 +32,9 @@ services:
       - ./data:/data
       # Mount docker-compose file for compose_hash calculation
       - ./docker-compose.production.yml:/app/docker-compose.production.yml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
       # Logging
       - RUST_LOG=debug
@@ -92,8 +95,29 @@ services:
       retries: 3
       start_period: 20s
 
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=platform
+      - POSTGRES_PASSWORD=platform_password
+      - POSTGRES_DB=platform
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - production-platform-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U platform"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 networks:
   production-platform-network:
     driver: bridge
     name: production-platform-network
+
+volumes:
+  postgres-data:
+    name: platform-api-postgres-data
 

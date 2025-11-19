@@ -178,16 +178,19 @@ pub fn compute_challenge_hash(challenge: &str) -> String {
     hex::encode(hasher.finalize())
 }
 
-/// Verify validator using compose hash verification
-/// TODO: Implement full TDX verification with dstack-verifier (MRTD/RTMR validation)
-/// Currently only verifies compose hash matches the expected compose from DB
+/// Verify validator using full TDX verification with dstack-verifier
+/// This verifies:
+/// 1. Quote signature using Intel PCCS/dcap-qvl
+/// 2. MRTD/RTMR measurements match expected values
+/// 3. Compose hash matches expected value from DB
+/// 4. Challenge binding (nonce) is correct
 async fn verify_validator_with_dstack_verifier(
     state: &AppState,
     msg: &AttestationMessage,
     challenge: Option<&[u8]>,
-    _verifier: &Arc<DstackVerifierClient>,
+    verifier: &Arc<DstackVerifierClient>,
 ) -> anyhow::Result<()> {
-    info!("Verifying validator compose hash (TDX verification TODO)");
+    info!("Starting full TDX verification for validator");
 
     // Extract event log
     let event_log = msg
@@ -251,35 +254,117 @@ async fn verify_validator_with_dstack_verifier(
     let app_compose_str =
         serde_json::to_string(&app_compose).context("Failed to serialize app_compose")?;
 
+    info!("📋 PLATFORM-API EXPECTED app_compose (raw JSON):\n{}", app_compose_str);
+    info!("📋 PLATFORM-API env_keys used: {:?}", env_keys);
+
+    // Normalize JSON to ensure consistent key ordering before hashing
+    let normalized_compose = normalize_json_for_hashing(&app_compose_str)
+        .unwrap_or_else(|_| app_compose_str.clone());
+    
+    info!("📋 PLATFORM-API normalized JSON:\n{}", normalized_compose);
+
     let mut hasher = Sha256::new();
-    hasher.update(app_compose_str.as_bytes());
+    hasher.update(normalized_compose.as_bytes());
     let expected_compose_hash = hex::encode(hasher.finalize());
 
     info!("Expected compose hash from DB: {}", expected_compose_hash);
 
     // Compare compose hashes
     if validator_compose_hash != expected_compose_hash {
-        // TEMPORARY: Allow validators with mismatched compose hashes during migration
-        warn!(
-            "Compose hash mismatch (temporarily allowed): validator={}, expected={}",
-            validator_compose_hash, expected_compose_hash
-        );
-        // TODO: Re-enable strict verification once all validators are updated
-        // return Err(anyhow::anyhow!(
-        //     "Compose hash mismatch: validator reported {}, expected {}",
-        //     validator_compose_hash,
-        //     expected_compose_hash
-        // ));
-    } else {
-        info!("Compose hash verification successful");
+        return Err(anyhow::anyhow!(
+            "Compose hash mismatch: validator reported {}, expected {}",
+            validator_compose_hash,
+            expected_compose_hash
+        ));
     }
+    
+    info!("✅ Compose hash verification successful");
 
-    // TODO: Verify quote signature and MRTD/RTMR values using dstack-verifier
-    // This requires:
-    // 1. Extract VM config (cpu_count, memory_size) from validator's vm_config or event log
-    // 2. Call dstack-verifier with correct vm_config to compute expected MRTD
-    // 3. Compare expected MRTD with actual MRTD from quote
-    // 4. Verify quote signature using Intel's PCCS service
+    // Extract quote for dstack-verifier
+    let quote_str = msg
+        .quote
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Missing quote for TDX verification"))?;
+
+    // Decode quote from base64 to hex (dstack-verifier expects hex)
+    let quote_bytes = match base64_engine.decode(quote_str) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            // Try hex as fallback
+            hex::decode(quote_str).context("Failed to decode quote as base64 or hex")?
+        }
+    };
+    let quote_hex = hex::encode(&quote_bytes);
+
+    // Get VM hardware spec from config.rs (same values used to provision the VM)
+    let _vm_spec = state
+        .storage
+        .get_vm_compose_config("validator_vm")
+        .await
+        .context("Failed to get VM spec for verification")?;
+
+    // Check if validator provided vm_config (required for production)
+    let has_vm_config = msg.vm_config.as_ref()
+        .map(|c| !c.is_empty())
+        .unwrap_or(false);
+
+    if !has_vm_config {
+        return Err(anyhow::anyhow!(
+            "Validator must provide vm_config for TDX verification. \
+             The validator VM must be running in a dstack CVM with guest-agent enabled."
+        ));
+    }
+    
+    {
+        // Extract VM config from validator's message
+        // The vm_config from the validator's guest-agent includes os_image_hash
+        // from /etc/dstack/sys_config.json (created by VMM at boot)
+        let (vm_config_str, vm_config) = resolve_vm_config_from_msg(msg, "")?;
+        
+        // Get os_image_hash from the parsed vm_config (already included by dstack)
+        let os_image_hash = hex::encode(&vm_config.os_image_hash);
+
+        info!(
+            "Using VM config for verification: cpu_count={}, memory_size={}, os_image_hash={}",
+            vm_config.cpu_count, vm_config.memory_size, os_image_hash
+        );
+
+        // Call dstack-verifier to perform full TDX verification
+        let pccs_url = std::env::var("PCCS_URL").ok();
+        
+        let verification_request = platform_api::services::dstack_verifier::VerificationRequest {
+            quote: quote_hex,
+            event_log: event_log.clone(),
+            vm_config: vm_config_str,
+            pccs_url,
+            debug: Some(false),
+        };
+
+        info!("Calling dstack-verifier for full TDX verification");
+        
+        let verification_result = verifier
+            .verify(verification_request)
+            .await
+            .context("Failed to verify TDX quote with dstack-verifier")?;
+
+        if !verification_result.is_valid {
+            return Err(anyhow::anyhow!(
+                "TDX verification failed: {}",
+                verification_result.reason.unwrap_or_else(|| "Unknown reason".to_string())
+            ));
+        }
+
+        info!(
+            "✅ TDX verification successful - quote_verified={}, event_log_verified={}, os_image_hash_verified={}",
+            verification_result.details.quote_verified,
+            verification_result.details.event_log_verified,
+            verification_result.details.os_image_hash_verified
+        );
+
+        if let Some(tcb_status) = &verification_result.details.tcb_status {
+            info!("TCB Status: {}", tcb_status);
+        }
+    }
 
     // Verify challenge binding if provided
     if let Some(challenge_bytes) = challenge {
@@ -321,8 +406,12 @@ fn resolve_vm_config_from_msg(
     os_image_hash: &str,
 ) -> anyhow::Result<(String, VmConfig)> {
     if let Some(raw) = msg.vm_config.as_ref() {
+        // Try to parse the vm_config from the validator's message
         match serde_json::from_str::<VmConfig>(raw) {
-            Ok(parsed) => return Ok((raw.clone(), parsed)),
+            Ok(parsed) => {
+                info!("Using vm_config from validator message");
+                return Ok((raw.clone(), parsed));
+            }
             Err(err) => {
                 warn!(
                     "Invalid vm_config provided by validator; falling back to defaults: {}",
@@ -337,9 +426,60 @@ fn resolve_vm_config_from_msg(
 }
 
 fn build_fallback_vm_config(os_image_hash: &str) -> anyhow::Result<(String, VmConfig)> {
+    // Use the same defaults as in config.rs for validator VMs
+    // DEFAULT_VM_VCPU = 16, DEFAULT_VM_MEMORY_MB = 16 * 1024
+    let cpu_count = std::env::var("VALIDATOR_VM_VCPU")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(16);
+    
+    let memory_mb = std::env::var("VALIDATOR_VM_MEMORY_MB")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(16 * 1024);
+    
+    let memory_size = (memory_mb as u64) * 1024 * 1024; // Convert MB to bytes
+
+    info!(
+        "Building fallback vm_config: cpu_count={}, memory_size={} bytes ({} MB)",
+        cpu_count, memory_size, memory_mb
+    );
+
     let vm_config =
-        DstackVerifierClient::extract_vm_config(2, 8 * 1024 * 1024 * 1024, os_image_hash);
+        DstackVerifierClient::extract_vm_config(cpu_count, memory_size, os_image_hash);
     let parsed: VmConfig =
         serde_json::from_str(&vm_config).context("Failed to parse fallback vm_config JSON")?;
     Ok((vm_config, parsed))
 }
+
+/// Normalize JSON by sorting all object keys alphabetically
+/// This ensures consistent hashing regardless of key insertion order
+fn normalize_json_for_hashing(json_str: &str) -> anyhow::Result<String> {
+    let value: serde_json::Value = serde_json::from_str(json_str)
+        .context("Failed to parse JSON for normalization")?;
+    
+    let normalized = sort_json_keys(&value);
+    
+    serde_json::to_string(&normalized)
+        .context("Failed to serialize normalized JSON")
+}
+
+/// Recursively sort all object keys in a JSON value
+fn sort_json_keys(value: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    
+    match value {
+        Value::Object(map) => {
+            let mut sorted: std::collections::BTreeMap<String, Value> = std::collections::BTreeMap::new();
+            for (k, v) in map {
+                sorted.insert(k.clone(), sort_json_keys(v));
+            }
+            Value::Object(sorted.into_iter().collect())
+        }
+        Value::Array(arr) => {
+            Value::Array(arr.iter().map(|v| sort_json_keys(v)).collect())
+        }
+        _ => value.clone()
+    }
+}
+

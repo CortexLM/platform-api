@@ -10,6 +10,16 @@ pub struct VmComposeConfig {
     pub compose_content: String,
     pub description: Option<String>,
     pub required_env: Vec<String>,
+    #[serde(default)]
+    pub os_image_hash: Option<String>,
+    #[serde(default)]
+    pub vcpu: Option<u32>,
+    #[serde(default)]
+    pub memory_mb: Option<u32>,
+    #[serde(default)]
+    pub disk_gb: Option<u32>,
+    #[serde(default)]
+    pub image_version: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

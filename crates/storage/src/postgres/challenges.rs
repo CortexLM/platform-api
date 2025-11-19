@@ -86,7 +86,9 @@ impl PostgresStorageBackend {
 
         let row = sqlx::query_as::<_, VmComposeRow>(
             r#"
-            SELECT id, vm_type, compose_content, description, required_env, created_at, updated_at
+            SELECT id, vm_type, compose_content, description, required_env, 
+                   os_image_hash, vcpu, memory_mb, disk_gb, image_version,
+                   created_at, updated_at
             FROM vm_compose_configs
             WHERE vm_type = $1
         "#,
@@ -106,6 +108,11 @@ impl PostgresStorageBackend {
             compose_content: row.compose_content,
             description: row.description,
             required_env,
+            os_image_hash: row.os_image_hash,
+            vcpu: row.vcpu.map(|v| v as u32),
+            memory_mb: row.memory_mb.map(|v| v as u32),
+            disk_gb: row.disk_gb.map(|v| v as u32),
+            image_version: row.image_version,
             created_at: row.created_at,
             updated_at: row.updated_at,
         })

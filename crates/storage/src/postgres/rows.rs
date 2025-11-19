@@ -69,6 +69,11 @@ pub struct VmComposeRow {
     pub compose_content: String,
     pub description: Option<String>,
     pub required_env: sqlx::types::JsonValue,
+    pub os_image_hash: Option<String>,
+    pub vcpu: Option<i32>,
+    pub memory_mb: Option<i32>,
+    pub disk_gb: Option<i32>,
+    pub image_version: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

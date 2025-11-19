@@ -23,13 +23,16 @@ RUN ln -s /build/bittensor-rs /bittensor-rs
 COPY platform-api/Cargo.toml platform-api/Cargo.lock ./
 
 # Create directory structure and copy Cargo.toml files
-RUN mkdir -p crates/api crates/storage crates/models \
+RUN mkdir -p crates/api crates/api-core crates/storage crates/models \
              crates/scheduler crates/builder crates/attestation \
-             crates/kbs crates/autoscaler \
+             crates/kbs crates/autoscaler crates/websocket \
+             crates/orm-gateway crates/challenge-runner crates/routes \
+             crates/crypto crates/config \
              bins/platform-api-server
 
 # Copy each Cargo.toml individually (COPY doesn't work well with wildcards)
 COPY platform-api/crates/api/Cargo.toml crates/api/
+COPY platform-api/crates/api-core/Cargo.toml crates/api-core/
 COPY platform-api/crates/storage/Cargo.toml crates/storage/
 COPY platform-api/crates/models/Cargo.toml crates/models/
 COPY platform-api/crates/scheduler/Cargo.toml crates/scheduler/
@@ -37,12 +40,18 @@ COPY platform-api/crates/builder/Cargo.toml crates/builder/
 COPY platform-api/crates/attestation/Cargo.toml crates/attestation/
 COPY platform-api/crates/kbs/Cargo.toml crates/kbs/
 COPY platform-api/crates/autoscaler/Cargo.toml crates/autoscaler/
+COPY platform-api/crates/websocket/Cargo.toml crates/websocket/
+COPY platform-api/crates/orm-gateway/Cargo.toml crates/orm-gateway/
+COPY platform-api/crates/challenge-runner/Cargo.toml crates/challenge-runner/
+COPY platform-api/crates/routes/Cargo.toml crates/routes/
+COPY platform-api/crates/crypto/Cargo.toml crates/crypto/
+COPY platform-api/crates/config/Cargo.toml crates/config/
 COPY platform-api/bins/platform-api-server/Cargo.toml bins/platform-api-server/
 
 # Create dummy source files to build dependencies
 RUN mkdir -p bins/platform-api-server/src && \
     echo "fn main() {}" > bins/platform-api-server/src/main.rs && \
-    for crate in api storage models scheduler builder attestation kbs autoscaler; do \
+    for crate in api api-core storage models scheduler builder attestation kbs autoscaler websocket orm-gateway challenge-runner routes crypto config; do \
         mkdir -p crates/$crate/src && \
         echo "fn main() {}" > crates/$crate/src/lib.rs; \
     done
